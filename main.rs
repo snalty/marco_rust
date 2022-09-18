@@ -12,13 +12,14 @@ use gio::prelude::*;
 use gtk::prelude::*;
 use gtk::{ApplicationWindow, Image};
 use mime::IMAGE_BMP;
+use rocket::http::hyper::header::ContentType;
 use rocket_multipart_form_data::{MultipartFormData, MultipartFormDataField, MultipartFormDataOptions};
 use std::{env::args, fs::File, path::PathBuf, time::SystemTime};
 use std::thread;
 use gdk_pixbuf::Pixbuf;
 use std::sync::{Arc, Mutex};
 #[macro_use] use rocket::*;
-use rocket::{State, http::{ContentType, RawStr}, response::{NamedFile, content}};
+use rocket::{State, response::{NamedFile, content}, };
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
 use clap::Arg;
@@ -29,11 +30,12 @@ fn main() {
     let application = gtk::Application::new(
         Some("com.github.gtk-rs.examples.communication_thread"),
         Default::default(),
-    )
-    .expect("Initialization failed...");
+    );
+
     application.connect_activate(build_ui);
-    application.run(&args().collect::<Vec<_>>());
+    application.run();
 }
+
 #[derive(Serialize, Deserialize, Clone)]
 struct ImageRecord {
     image_id: i32,
@@ -104,7 +106,7 @@ fn build_ui(application: &gtk::Application) {
     .about("Embedded marco photo frame application.")
     .author("@snalty")
     .arg(Arg::with_name("database-path")
-    .short("d")
+    .short('d')
     .long("database")
     .value_name("DATABASE_PATH")
     .help("Set the path to the database")
