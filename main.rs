@@ -7,7 +7,7 @@
 #![feature(proc_macro_hygiene, decl_macro)]
 mod load_examples;
 
-use futures::{channel::mpsc, StreamExt};
+use futures::{channel::mpsc, StreamExt, lock::Mutex};
 use gio::prelude::*;
 use gtk::prelude::*;
 use gtk::{ApplicationWindow, Image};
@@ -16,11 +16,11 @@ use rocket_multipart_form_data::{MultipartFormData, MultipartFormDataField, Mult
 use std::{env::args, fs::File, path::PathBuf, time::SystemTime};
 use std::thread;
 use gdk_pixbuf::Pixbuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
 #[macro_use] use rocket::*;
-use rocket::{State, response::{NamedFile, content}, http::ContentType};
+use rocket::{State, response::content, fs::NamedFile, http::ContentType};
 use rusqlite::{params, Connection, Result};
-use serde::{Deserialize, Serialize};
+use ::serde::{Deserialize, Serialize};
 use clap::Arg;
 use std::fmt::Display;
 use std::fs;
@@ -133,7 +133,7 @@ fn build_ui(application: &gtk::Application) {
     window.set_default_size(1024, 768);
     window.set_resizable(false);
     println!("gonn try printing the image path");
-    let pfl = frame_controller.lock().unwrap();
+    let pfl = frame_controller.try_lock().unwrap();
     let image = Image::from_pixbuf(
         Some(
             &load_image(
@@ -194,17 +194,16 @@ fn build_ui(application: &gtk::Application) {
         thread::spawn(move || {
             // Instead of a counter, your application code will
             // block here on TCP or serial communications.
-            rocket::ignite()
+            rocket::build()
             .manage(Arc::new(Mutex::new(sender)))
             .manage(frame_controller)
             .mount("/", routes![root, image_uploader, get_library, get_thumb, get_current])
-            .launch();
         });
     }
     
     #[get("/api/next")]
-    fn root(sender: State<Arc<Mutex<mpsc::Sender<String>>>>, frame_controller: State<Arc<Mutex<FrameController>>>) -> content::Json<String> {
-        let mut pfl = frame_controller.lock().unwrap();
+    async fn root(sender: &State<Arc<Mutex<mpsc::Sender<String>>>>, frame_controller: &State<Arc<Mutex<FrameController>>>) -> content::RawJson<String> {
+        let mut pfl = frame_controller.lock();
         pfl.next();
         let image = &pfl.library.images[pfl.current_photo as usize];
         sender.inner()
@@ -212,14 +211,14 @@ fn build_ui(application: &gtk::Application) {
         .unwrap()
         .try_send(image.image_path.to_string()).unwrap();
         
-        return content::Json(
+        return content::RawJson(
             serde_json::to_string(image).unwrap()
         );
     }
     
     
     #[post("/api/add", format = "multipart", data = "<data>")]
-    fn image_uploader(content_type: &ContentType, data: Data, frame_controller: State<Arc<Mutex<FrameController>>>)
+    pub async fn image_uploader(content_type: &ContentType, data: Data<'_>, frame_controller: &State<Arc<Mutex<FrameController>>>)
     {
         let mut options = MultipartFormDataOptions::with_multipart_form_data_fields(
             vec! [
@@ -228,7 +227,7 @@ fn build_ui(application: &gtk::Application) {
             ]
         );
         
-        let mut form_data = MultipartFormData::parse(content_type, data, options).unwrap();
+        let mut form_data = MultipartFormData::parse(content_type, data, options).await.unwrap();
         
         let image = form_data.files.get("image");
         let thumb = form_data.files.get("thumbnail");
@@ -275,7 +274,7 @@ fn build_ui(application: &gtk::Application) {
     }
     
     #[get("/api/library")]
-    fn get_library(frame_controller: State<Arc<Mutex<FrameController>>>) -> content::Json<String>
+    fn get_library(frame_controller: &State<Arc<Mutex<FrameController>>>) -> content::RawJson<String>
     {
         let images = &frame_controller.lock().unwrap().library.images;
         let library = ImageLibrary {
@@ -283,11 +282,11 @@ fn build_ui(application: &gtk::Application) {
             images: images.to_vec()
         };
         let json = serde_json::to_string(&library).unwrap();
-        return content::Json(json)
+        return content::RawJson(json)
     }
     
     #[get("/api/thumb?<image_id>")]
-    fn get_thumb(image_id: i32, frame_controller: State<Arc<Mutex<FrameController>>>) -> response::NamedFile 
+    pub async fn get_thumb(image_id: i32, frame_controller: &State<Arc<Mutex<FrameController>>>) -> Option<NamedFile>
     {
         let thumb_path = &frame_controller
             .lock()
@@ -295,11 +294,11 @@ fn build_ui(application: &gtk::Application) {
             .library
             .images[image_id as usize]
             .thumb_path;
-        NamedFile::open(thumb_path).unwrap()
+        NamedFile::open(thumb_path).await.ok()
     }
 
     #[get("/api/current")]
-    fn get_current(frame_controller: State<Arc<Mutex<FrameController>>>) -> content::Json<String> 
+    fn get_current(frame_controller: &State<Arc<Mutex<FrameController>>>) -> content::RawJson<String> 
     {
         let controller = frame_controller
             .lock()
@@ -311,7 +310,7 @@ fn build_ui(application: &gtk::Application) {
             .library
             .images[current_id as usize];
 
-        content::Json(
+        content::RawJson(
             serde_json::to_string(current_photo).unwrap()
         )
     }
