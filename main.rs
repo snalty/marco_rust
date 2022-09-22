@@ -15,9 +15,11 @@ use gtk::prelude::*;
 use gtk::{ApplicationWindow, Image};
 use mime::IMAGE_BMP;
 use rocket::State;
-use rocket::fs::NamedFile;
+use rocket::fs::{NamedFile, TempFile};
 use rocket::response::content;
+use std::path::PathBuf;
 use std::thread;
+use std::time::SystemTime;
 use gdk_pixbuf::Pixbuf;
 use std::sync::{Arc};
 use rusqlite::{params, Connection, Result};
@@ -25,6 +27,8 @@ use ::serde::{Deserialize, Serialize};
 use clap::Arg;
 use std::fmt::Display;
 use std::fs;
+use rocket::form::Form;
+
 
 #[tokio::main]
 async fn main() {
@@ -218,61 +222,47 @@ async fn root(sender: &State<Arc<Mutex<mpsc::Sender<String>>>>, frame_controller
 }
 
 
-// #[post("/api/add", format = "multipart", data = "<data>")]
-// pub async fn image_uploader(content_type: &ContentType, data: Data<'_>, frame_controller: &State<Arc<Mutex<FrameController>>>)
-// {
-//     let mut options = MultipartFormDataOptions::with_multipart_form_data_fields(
-//         vec! [
-//         MultipartFormDataField::file("image").content_type_by_string(Some(mime::IMAGE_STAR)).unwrap(),
-//         MultipartFormDataField::file("thumbnail").content_type_by_string(Some(mime::IMAGE_STAR)).unwrap(),
-//         ]
-//     );
+#[derive(FromForm)]
+struct ImageUpload<'r> {
+    image: TempFile<'r>,
+    thumbnail: Option<TempFile<'r>>,
+}
+
+#[post("/api/add", data = "<image_upload>")]
+pub async fn image_uploader(image_upload: Form<ImageUpload<'_>>, frame_controller: &State<Arc<Mutex<FrameController>>>) {
+        
+    let image = &image_upload.image;
+    let thumb = &image_upload.thumbnail;
+
+    let mut file_name: Option<&String> = None;
+    let mut image_path: Option<&PathBuf> = None;
+    let mut thumb_path: Option<&PathBuf> = None;
     
-//     let mut form_data = MultipartFormData::parse(content_type, data, options).await.unwrap();
-    
-//     let image = form_data.files.get("image");
-//     let thumb = form_data.files.get("thumbnail");
+    let record = ImageRecord {
+        image_id: 0,
+        image_path: format!("/usr/local/share/marco/images/{}", file_name.unwrap()),
+        thumb_path: format!("/usr/local/share/marco/thumbs/{}", file_name.unwrap()),
+        date_added: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as i32,
+        date_created: 0,
+        favourite: false
+    };
 
-//     let mut file_name: Option<&String> = None;
-//     let mut image_path: Option<&PathBuf> = None;
-//     let mut thumb_path: Option<&PathBuf> = None;
-    
-//     if let Some(file_fields) = image {
-//         let file_field = &file_fields[0];
-//         file_name = Some(file_field.file_name.as_ref().unwrap());
-//         image_path = Some(&file_field.path);
-//     }
+    let conn = &frame_controller.lock().await.database;
+    conn.execute("INSERT INTO images 
+    (image_path, thumb_path, date_added, date_created, favourite) 
+    VALUES (?1, ?2, ?3, ?4, ?5)", 
+    params![record.image_path, record.thumb_path, record.date_added, 
+        record.date_created, record.favourite]).unwrap();
 
-//     if let Some(file_fields) = thumb {
-//         let file_field = &file_fields[0];
-//         thumb_path = Some(&file_field.path);
-//     }
+    fs::rename(image_path.unwrap(), record.image_path).unwrap();
+    fs::rename(thumb_path.unwrap(), record.thumb_path).unwrap();
 
-//     let record = ImageRecord {
-//         image_id: 0,
-//         image_path: format!("/usr/local/share/marco/images/{}", file_name.unwrap()),
-//         thumb_path: format!("/usr/local/share/marco/thumbs/{}", file_name.unwrap()),
-//         date_added: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as i32,
-//         date_created: 0,
-//         favourite: false
-//     };
+    // Update library from database
 
-//     let conn = &frame_controller.lock().await.database;
-//     conn.execute("INSERT INTO images 
-//     (image_path, thumb_path, date_added, date_created, favourite) 
-//     VALUES (?1, ?2, ?3, ?4, ?5)", 
-//     params![record.image_path, record.thumb_path, record.date_added, 
-//         record.date_created, record.favourite]).unwrap();
-
-//     fs::rename(image_path.unwrap(), record.image_path).unwrap();
-//     fs::rename(thumb_path.unwrap(), record.thumb_path).unwrap();
-
-//     // Update library from database
-
-//     &frame_controller.lock()
-//         .await
-//         .update_library();
-// }
+    &frame_controller.lock()
+        .await
+        .update_library();
+}
 
 #[get("/api/library")]
 pub async fn get_library(frame_controller: &State<Arc<Mutex<FrameController>>>) -> content::RawJson<String>
