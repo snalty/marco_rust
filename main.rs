@@ -22,7 +22,8 @@ use std::thread;
 use std::time::SystemTime;
 use gdk_pixbuf::Pixbuf;
 use std::sync::{Arc};
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Result};
+use tokio_rusqlite::Connection;
 use ::serde::{Deserialize, Serialize};
 use clap::Arg;
 use std::fmt::Display;
@@ -76,22 +77,22 @@ impl FrameController {
         }
     }
     
-    fn update_library(&mut self) {
-        let mut query = self.database.prepare("SELECT * FROM images")
-        .unwrap();
-        
-        let image_rows = query.query_map(params![], |row| {
-            Ok(ImageRecord {
-                image_id: row.get("image_id").unwrap(),
-                image_path: row.get("image_path").unwrap(),
-                thumb_path: row.get("thumb_path").unwrap(),
-                date_added: row.get("date_added").unwrap(),
-                date_created: row.get("date_created").unwrap(),
-                favourite: row.get("favourite").unwrap(),
-            })
-        }).unwrap();
-        
-        self.library.images = image_rows.map(|x| x.unwrap()).collect();
+    async fn update_library(&mut self) {
+        self.database
+            .call(|db| {
+                let mut query = db.prepare("SELECT * FROM images")?;
+                let image_rows = query.query_map(params![], |row| {
+                    Ok(ImageRecord {
+                        image_id: row.get("image_id").unwrap(),
+                        image_path: row.get("image_path").unwrap(),
+                        thumb_path: row.get("thumb_path").unwrap(),
+                        date_added: row.get("date_added").unwrap(),
+                        date_created: row.get("date_created").unwrap(),
+                        favourite: row.get("favourite").unwrap(),
+                    })
+                }).unwrap();
+                self.library.images = image_rows.map(|x| x.unwrap()).collect();
+            }).await;
     }
 }
 
@@ -104,7 +105,7 @@ fn load_image(path: &str) -> Pixbuf {
     return image_pixbuf;
 }
 
-fn build_ui(application: &gtk::Application) {
+async fn build_ui(application: &gtk::Application) {
     let matches = clap::App::new("marco")
     .version("alpha")
     .about("Embedded marco photo frame application.")
@@ -119,19 +120,24 @@ fn build_ui(application: &gtk::Application) {
     
     let database_path = "/usr/local/share/marco/db.sqlite";
     
-    let db = Connection::open(database_path).unwrap();
+    let db = Connection::open(database_path)
+        .await.expect("Failed to open connection to db.");
     
-    db.execute(
-        "create table if not exists images (
-            image_id integer primary key,
-            image_path text not null unique,
-            thumb_path text not null unique,
-            date_added integer not null,
-            date_created integer not null,
-            favourite integer not null
-        )",
-        params![]
-    ).unwrap();
+    db.call(|db|
+    {
+        db.execute(
+            "create table if not exists images (
+                image_id integer primary key,
+                image_path text not null unique,
+                thumb_path text not null unique,
+                date_added integer not null,
+                date_created integer not null,
+                favourite integer not null
+            )",
+            params![]
+        ).unwrap();
+    }).await;
+
     
     let frame_controller = Arc::new(Mutex::new(photo_frame_setup(db)));
     let window = ApplicationWindow::new(application);
@@ -234,14 +240,14 @@ pub async fn image_uploader(image_upload: Form<ImageUpload<'_>>, frame_controlle
     let image = &image_upload.image;
     let thumb = &image_upload.thumbnail;
 
-    let mut file_name: Option<&String> = None;
-    let mut image_path: Option<&PathBuf> = None;
-    let mut thumb_path: Option<&PathBuf> = None;
-    
+    let file_name = image.name();
+    let image_path = format!("/usr/local/share/marco/images/{}", file_name.unwrap());
+    let thumb_path = format!("/usr/local/share/marco/thumbs/{}", file_name.unwrap());
+
     let record = ImageRecord {
         image_id: 0,
-        image_path: format!("/usr/local/share/marco/images/{}", file_name.unwrap()),
-        thumb_path: format!("/usr/local/share/marco/thumbs/{}", file_name.unwrap()),
+        image_path: image_path.clone(),
+        thumb_path: thumb_path.clone(),
         date_added: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as i32,
         date_created: 0,
         favourite: false
@@ -254,8 +260,8 @@ pub async fn image_uploader(image_upload: Form<ImageUpload<'_>>, frame_controlle
     params![record.image_path, record.thumb_path, record.date_added, 
         record.date_created, record.favourite]).unwrap();
 
-    fs::rename(image_path.unwrap(), record.image_path).unwrap();
-    fs::rename(thumb_path.unwrap(), record.thumb_path).unwrap();
+    fs::rename(image_path, record.image_path).unwrap();
+    fs::rename(thumb_path, record.thumb_path).unwrap();
 
     // Update library from database
 
