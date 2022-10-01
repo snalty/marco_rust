@@ -11,8 +11,8 @@ mod load_examples;
 
 use futures::{channel::mpsc, StreamExt, lock::Mutex};
 use gio::prelude::*;
-use gtk::prelude::*;
-use gtk::{ApplicationWindow, Image};
+use gtk4::prelude::*;
+use gtk4::{ApplicationWindow, Image};
 use mime::IMAGE_BMP;
 use rocket::State;
 use rocket::fs::{NamedFile, TempFile};
@@ -33,7 +33,7 @@ use rocket::form::Form;
 
 #[tokio::main]
 async fn main() {
-    let application = gtk::Application::new(
+    let application = gtk4::Application::new(
         Some("com.github.gtk-rs.examples.communication_thread"),
         Default::default(),
     );
@@ -80,7 +80,7 @@ impl FrameController {
     async fn update_library(&mut self) {
         self.database
             .call(|db| {
-                let mut query = db.prepare("SELECT * FROM images")?;
+                let mut query = db.prepare("SELECT * FROM images").unwrap();
                 let image_rows = query.query_map(params![], |row| {
                     Ok(ImageRecord {
                         image_id: row.get("image_id").unwrap(),
@@ -105,7 +105,7 @@ fn load_image(path: &str) -> Pixbuf {
     return image_pixbuf;
 }
 
-async fn build_ui(application: &gtk::Application) {
+async fn build_ui(application: &gtk4::Application) {
     let matches = clap::App::new("marco")
     .version("alpha")
     .about("Embedded marco photo frame application.")
@@ -117,28 +117,7 @@ async fn build_ui(application: &gtk::Application) {
     .help("Set the path to the database")
     .takes_value(true))
     .get_matches();
-    
-    let database_path = "/usr/local/share/marco/db.sqlite";
-    
-    let db = Connection::open(database_path)
-        .await.expect("Failed to open connection to db.");
-    
-    db.call(|db|
-    {
-        db.execute(
-            "create table if not exists images (
-                image_id integer primary key,
-                image_path text not null unique,
-                thumb_path text not null unique,
-                date_added integer not null,
-                date_created integer not null,
-                favourite integer not null
-            )",
-            params![]
-        ).unwrap();
-    }).await;
-
-    
+        
     let frame_controller = Arc::new(Mutex::new(photo_frame_setup(db)));
     let window = ApplicationWindow::new(application);
     window.set_default_size(1024, 768);
