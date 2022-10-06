@@ -10,17 +10,14 @@
 mod load_examples;
 
 use futures::{channel::mpsc, StreamExt, lock::Mutex};
-use gio::prelude::*;
-use gtk4::prelude::*;
-use gtk4::{ApplicationWindow, Image};
 use mime::IMAGE_BMP;
 use rocket::State;
 use rocket::fs::{NamedFile, TempFile};
 use rocket::response::content;
+use rocket::shield::Frame;
 use std::path::PathBuf;
 use std::thread;
 use std::time::SystemTime;
-use gdk_pixbuf::Pixbuf;
 use std::sync::{Arc};
 use rusqlite::{params, Result};
 use tokio_rusqlite::Connection;
@@ -29,17 +26,49 @@ use clap::Arg;
 use std::fmt::Display;
 use std::fs;
 use rocket::form::Form;
-
+use iced::{Sandbox, Settings, Element, Text};
 
 #[tokio::main]
 async fn main() {
-    let application = gtk4::Application::new(
-        Some("com.github.gtk-rs.examples.communication_thread"),
-        Default::default(),
-    );
+    // Get db connection
+    let db = Connection::open("/usr/local/share/marco/db.sqlite").await.unwrap();
+        
+    // Instantiate frame controller
+    let frame_controller = Arc::new(Mutex::new(FrameController::new(db)));
 
-    application.connect_activate(build_ui);
-    application.run();
+    // Launch rocket
+    tokio::spawn(async {
+        println!("Are we here?");
+        rocket::build()
+            .manage(frame_controller)
+            .mount("/", routes![root, get_thumb, get_current])
+            .launch().await;
+    });
+
+    PhotoFrame::run(Settings::default());
+}
+
+#[derive(Default)]
+struct PhotoFrame;
+
+impl Sandbox for PhotoFrame {
+    type Message = ();
+
+    fn new() -> PhotoFrame {
+        PhotoFrame
+    }
+
+    fn title(&self) -> String {
+        String::from("A cool application")
+    }
+
+    fn update(&mut self, _message: Self::Message) {
+        // This application has no interactions
+    }
+
+    fn view(&mut self) -> Element<Self::Message> {
+        Text::new("hello").size(50).into()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -76,10 +105,23 @@ impl FrameController {
             self.current_photo += 1;
         }
     }
-    
-    async fn update_library(&mut self) {
+
+    fn new(db: Connection) -> FrameController {
+        let library = ImageLibrary {
+            images: Vec::new()
+        };
+        let mut frame_controller = FrameController{
+            library: Box::new(library),
+            current_photo: 0,
+            database: db
+        };
+        frame_controller.update_library();
+        return frame_controller
+    }
+   
+    async fn update_library(&'static mut self) {
         self.database
-            .call(|db| {
+            .call(move |db| {
                 let mut query = db.prepare("SELECT * FROM images").unwrap();
                 let image_rows = query.query_map(params![], |row| {
                     Ok(ImageRecord {
@@ -94,101 +136,6 @@ impl FrameController {
                 self.library.images = image_rows.map(|x| x.unwrap()).collect();
             }).await;
     }
-}
-
-// TODO: Handle image cropping on the image upload flow
-fn load_image(path: &str) -> Pixbuf {
-    let start = std::time::SystemTime::now();
-    let mut  image_pixbuf = Pixbuf::from_file(&path).unwrap();
-    image_pixbuf = image_pixbuf.scale_simple(1024, 768, gdk_pixbuf::InterpType::Bilinear)
-    .unwrap();
-    return image_pixbuf;
-}
-
-async fn build_ui(application: &gtk4::Application) {
-    let matches = clap::App::new("marco")
-    .version("alpha")
-    .about("Embedded marco photo frame application.")
-    .author("@snalty")
-    .arg(Arg::with_name("database-path")
-    .short('d')
-    .long("database")
-    .value_name("DATABASE_PATH")
-    .help("Set the path to the database")
-    .takes_value(true))
-    .get_matches();
-        
-    let frame_controller = Arc::new(Mutex::new(photo_frame_setup(db)));
-    let window = ApplicationWindow::new(application);
-    window.set_default_size(1024, 768);
-    window.set_resizable(false);
-    println!("gonna try printing the image path");
-    let pfl = frame_controller.try_lock().unwrap();
-    
-    let image = Image::from_pixbuf(
-        Some(
-            &load_image(
-                pfl.library.images[pfl.current_photo as usize].image_path.as_str())
-            )
-    );
-    
-    drop(pfl);
-    window.add(&image);
-    
-    
-    // Create a channel between communication thread and main event loop:
-    let (sender, receiver) = mpsc::channel(1000);
-    spawn_local_handler(image, receiver);
-    start_communication_thread(sender, frame_controller);
-    
-    window.show_all();
-    }
-    
-fn photo_frame_setup(db: Connection) -> FrameController {
-    let library = ImageLibrary {
-        images: Vec::new()
-    };
-    let mut frame_controller = FrameController{
-        library: Box::new(library),
-        current_photo: 0,
-        database: db
-    };
-    frame_controller.update_library();
-    return frame_controller
-}
-
-/// Spawn channel receive task on the main event loop.
-fn spawn_local_handler(image: gtk::Image, mut receiver: mpsc::Receiver<String>) {
-    let main_context = glib::MainContext::default();
-    let future = async move {
-        while let Some(file) = receiver.next().await {
-            let start = std::time::SystemTime::now();
-            println!("loading image");
-            let new_image = load_image(&file);
-            println!("took {}s to load and crop image", start.elapsed().unwrap().as_secs());
-            image.set_from_pixbuf(Some(&new_image));
-            let elapsed_time = start.elapsed().unwrap().as_secs();
-            println!("image loaded in {}s :)", elapsed_time);
-        }
-    };
-    main_context.spawn_local(future);
-}
-
-// Spawn separate thread to handle communication.
-fn start_communication_thread(sender: mpsc::Sender<String>, frame_controller: Arc<Mutex<FrameController>>) {
-    // Note that blocking I/O with threads can be prevented
-    // by using asynchronous code, which is often a better
-    // choice. For the sake of this example, we showcase the
-    // way to use a thread when there is no other option.
-
-    tokio::spawn(async {
-        println!("Are we here?");
-        rocket::build()
-            .manage(Arc::new(Mutex::new(sender)))
-            .manage(frame_controller)
-            .mount("/", routes![root, get_thumb, get_current])
-            .launch().await;
-    });
 }
 
 #[get("/api/next")]
@@ -232,12 +179,12 @@ pub async fn image_uploader(image_upload: Form<ImageUpload<'_>>, frame_controlle
         favourite: false
     };
 
-    let conn = &frame_controller.lock().await.database;
-    conn.execute("INSERT INTO images 
-    (image_path, thumb_path, date_added, date_created, favourite) 
-    VALUES (?1, ?2, ?3, ?4, ?5)", 
-    params![record.image_path, record.thumb_path, record.date_added, 
-        record.date_created, record.favourite]).unwrap();
+    // let conn = &frame_controller.lock().await.database;
+    // conn.execute("INSERT INTO images 
+    // (image_path, thumb_path, date_added, date_created, favourite) 
+    // VALUES (?1, ?2, ?3, ?4, ?5)", 
+    // params![record.image_path, record.thumb_path, record.date_added, 
+    //     record.date_created, record.favourite]).unwrap();
 
     fs::rename(image_path, record.image_path).unwrap();
     fs::rename(thumb_path, record.thumb_path).unwrap();

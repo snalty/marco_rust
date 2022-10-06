@@ -5,13 +5,10 @@ name = "photo_frame"
 version = "0.1.0"
 authors = ["Sam Nalty"]
 edition = "2018"
+resolver="2"
 
 [dependencies]
-gtk4 = "0.4.1"
-atk = "0.15.1"
-gdk-pixbuf = "0.15.11"
-gio = "0.15.12"
-glib = "0.15.12"
+iced = { version = "0.4", features = ["default"] }
 futures = "0.3.24"
 flame = "0.2.2"
 flamer = "0.4.0"
