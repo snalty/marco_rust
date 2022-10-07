@@ -119,34 +119,38 @@ impl FrameController {
         return frame_controller
     }
    
-    async fn update_library(&'static mut self) {
-        self.database
-            .call(move |db| {
+    async fn update_library(&mut self) {
+        let image_rows = self.database
+            .call(|db: &mut rusqlite::Connection| {
                 let mut query = db.prepare("SELECT * FROM images").unwrap();
-                let image_rows = query.query_map(params![], |row| {
+                let image_rows = query.query_map([], |row| {
                     Ok(ImageRecord {
-                        image_id: row.get("image_id").unwrap(),
-                        image_path: row.get("image_path").unwrap(),
-                        thumb_path: row.get("thumb_path").unwrap(),
-                        date_added: row.get("date_added").unwrap(),
-                        date_created: row.get("date_created").unwrap(),
-                        favourite: row.get("favourite").unwrap(),
+                        image_id: row.get("image_id")?,
+                        image_path: row.get("image_path")?,
+                        thumb_path: row.get("thumb_path")?,
+                        date_added: row.get("date_added")?,
+                        date_created: row.get("date_created")?,
+                        favourite: row.get("favourite")?,
                     })
-                }).unwrap();
-                self.library.images = image_rows.map(|x| x.unwrap()).collect();
+                })?
+                .collect::<Result<Vec<ImageRecord>, rusqlite::Error>>()?;
+
+            Ok::<_, rusqlite::Error>(image_rows)
+                
             }).await;
+            self.library.images = image_rows.expect("Image rows object was not a vector of ImageRecords.");
     }
 }
 
 #[get("/api/next")]
-async fn root(sender: &State<Arc<Mutex<mpsc::Sender<String>>>>, frame_controller: &State<Arc<Mutex<FrameController>>>) -> content::RawJson<String> {
+async fn root(frame_controller: &State<Arc<Mutex<FrameController>>>) -> content::RawJson<String> {
     let mut pfl = frame_controller.lock().await;
     pfl.next();
     let image = &pfl.library.images[pfl.current_photo as usize];
-    sender.inner()
-        .lock()
-        .await
-        .try_send(image.image_path.to_string()).unwrap();
+    // sender.inner()
+    //     .lock()
+    //     .await
+    //     .try_send(image.image_path.to_string()).unwrap();
     
     return content::RawJson(
         serde_json::to_string(image).unwrap()
@@ -155,7 +159,7 @@ async fn root(sender: &State<Arc<Mutex<mpsc::Sender<String>>>>, frame_controller
 
 
 #[derive(FromForm)]
-struct ImageUpload<'r> {
+pub struct ImageUpload<'r> {
     image: TempFile<'r>,
     thumbnail: Option<TempFile<'r>>,
 }
