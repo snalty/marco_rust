@@ -174,7 +174,7 @@ pub async fn image_uploader(image_upload: Form<ImageUpload<'_>>, frame_controlle
     let image_path = format!("/usr/local/share/marco/images/{}", file_name.unwrap());
     let thumb_path = format!("/usr/local/share/marco/thumbs/{}", file_name.unwrap());
 
-    let record = ImageRecord {
+    let record: ImageRecord = ImageRecord {
         image_id: 0,
         image_path: image_path.clone(),
         thumb_path: thumb_path.clone(),
@@ -183,15 +183,19 @@ pub async fn image_uploader(image_upload: Form<ImageUpload<'_>>, frame_controlle
         favourite: false
     };
 
-    // let conn = &frame_controller.lock().await.database;
-    // conn.execute("INSERT INTO images 
-    // (image_path, thumb_path, date_added, date_created, favourite) 
-    // VALUES (?1, ?2, ?3, ?4, ?5)", 
-    // params![record.image_path, record.thumb_path, record.date_added, 
-    //     record.date_created, record.favourite]).unwrap();
+    let conn = &frame_controller.lock().await.database;
+    conn.call(move |conn| {
+        conn.execute(
+            "INSERT INTO images 
+            (image_path, thumb_path, date_added, date_created, favourite) 
+            VALUES (?1, ?2, ?3, ?4, ?5)", 
+        params![record.image_path, record.thumb_path, record.date_added, 
+            record.date_created, record.favourite]
+        );
+    });
 
-    fs::rename(image_path, record.image_path).unwrap();
-    fs::rename(thumb_path, record.thumb_path).unwrap();
+    fs::rename(image_path, image_path).unwrap();
+    fs::rename(thumb_path, thumb_path).unwrap();
 
     // Update library from database
 
